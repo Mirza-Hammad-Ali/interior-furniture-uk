@@ -1,0 +1,27 @@
+import express from 'express';import cors from 'cors';import bcrypt from 'bcryptjs';import jwt from 'jsonwebtoken';import fs from 'fs';
+import {products} from './data/products.js';
+const app=express(),SECRET=process.env.JWT_SECRET||'dev-secret-change-me',DB='./data/db.json';
+app.use(cors(),express.json());
+const load=()=>fs.existsSync(DB)?JSON.parse(fs.readFileSync(DB)):{users:[],orders:[]};
+const save=d=>fs.writeFileSync(DB,JSON.stringify(d,null,2));
+const out=u=>({id:u.id,name:u.name,email:u.email,token:jwt.sign({id:u.id},SECRET,{expiresIn:'7d'})});
+const auth=(q,s,n)=>{try{q.uid=jwt.verify((q.headers.authorization||'').slice(7),SECRET).id;n()}catch{s.status(401).json({error:'Please sign in first'})}};
+app.get('/api/products',(q,s)=>s.json(q.query.category?products.filter(p=>p.cat===q.query.category):products));
+app.get('/api/products/:id',(q,s)=>{const p=products.find(x=>x.id===q.params.id);p?s.json(p):s.status(404).json({error:'Product not found'})});
+app.post('/api/auth/register',(q,s)=>{const{name,email,password}=q.body||{};
+ if(!name||!/^\S+@\S+\.\S+$/.test(email||'')||(password||'').length<6)return s.status(400).json({error:'Enter your name, a valid email and a password of 6+ characters'});
+ const d=load();if(d.users.some(u=>u.email===email.toLowerCase()))return s.status(409).json({error:'That email already has an account'});
+ const u={id:Date.now().toString(36),name,email:email.toLowerCase(),hash:bcrypt.hashSync(password,10)};d.users.push(u);save(d);s.json(out(u))});
+app.post('/api/auth/login',(q,s)=>{const{email='',password=''}=q.body||{};const u=load().users.find(x=>x.email===email.toLowerCase());
+ if(!u||!bcrypt.compareSync(password,u.hash))return s.status(401).json({error:'Wrong email or password'});s.json(out(u))});
+app.get('/api/orders',auth,(q,s)=>s.json(load().orders.filter(o=>o.uid===q.uid).reverse()));
+app.post('/api/orders',auth,(q,s)=>{const{items,shipping}=q.body||{};
+ if(!Array.isArray(items)||!items.length)return s.status(400).json({error:'Your bag is empty'});
+ const need=['name','address','city','postcode','phone'];if(!shipping||need.some(k=>!String(shipping[k]||'').trim()))return s.status(400).json({error:'Please complete all delivery details'});
+ const lines=[];for(const i of items){const p=products.find(x=>x.id===i.id),c=p&&p.colours.find(x=>x.name===i.colour),z=p&&p.sizes.find(x=>x.label===i.size),qty=Math.floor(i.qty);
+  if(!c||!z||!(qty>=1&&qty<=20))return s.status(400).json({error:'An item in your bag is no longer available'});
+  lines.push({id:p.id,name:p.name,colour:c.name,size:z.label,qty,price:p.price+z.add})}
+ const subtotal=lines.reduce((a,l)=>a+l.price*l.qty,0),delivery=subtotal>=500?0:49,d=load();
+ const o={id:'IF'+Date.now().toString(36).toUpperCase(),uid:q.uid,date:new Date().toISOString(),lines,subtotal,delivery,total:subtotal+delivery,shipping,status:'Pending – pay on delivery'};
+ d.orders.push(o);save(d);s.json(o)});
+app.listen(5000,()=>console.log('API running on http://localhost:5000'));
